@@ -22,10 +22,19 @@ public class Parser {
     private static volatile boolean running = true;
 
     public static void main(String[] args) {
+        ExcelExporter.ensureExcelDirectory();
+
         ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            scheduler.shutdown();
+            ExcelExporter.exportAllToExcel();
+        }));
+        System.out.println("Парсер запущен. Интервал: " + intervalMinutes + " минута");
+
         parseAllCurrency(client);
         scheduler.scheduleAtFixedRate(
                 () -> parseAllCurrency(client),
@@ -94,10 +103,6 @@ public class Parser {
             System.err.println("  [Investing.com] Ошибка при парсинге " + name + ": " + e.getMessage());
         }
     }
-
-    private static String lastUsdValue = null;
-    private static String lastEurValue = null;
-
     private static void parseCbrCurrency(HttpClient client) {
         String url = "https://www.cbr.ru/scripts/XML_daily.asp";
         try {
@@ -118,20 +123,14 @@ public class Parser {
             Element usdElement = doc.select("Valute:has(CharCode:contains(USD))").first();
             if (usdElement != null) {
                 String usdValue = usdElement.select("Value").text();
-                if (!usdValue.equals(lastUsdValue)) {
-                    System.out.println("  [ЦБ РФ] USD/RUB: " + usdValue);
-                    saveCbrData("usd_rub_cbr.csv", timestamp, "USD/RUB", usdValue);
-                    lastUsdValue = usdValue;
-                }
+                System.out.println("  [ЦБ РФ] USD/RUB: " + usdValue);
+                saveCbrData("usd_rub_cbr.csv", timestamp, "USD/RUB", usdValue);
             }
             Element eurElement = doc.select("Valute:has(CharCode:contains(EUR))").first();
             if (eurElement != null) {
                 String eurValue = eurElement.select("Value").text();
-                if (!eurValue.equals(lastEurValue)) {
-                    System.out.println("  [ЦБ РФ] EUR/RUB: " + eurValue);
-                    saveCbrData("eur_rub_cbr.csv", timestamp, "EUR/RUB", eurValue);
-                    lastEurValue = eurValue;
-                }
+                System.out.println("  [ЦБ РФ] EUR/RUB: " + eurValue);
+                saveCbrData("eur_rub_cbr.csv", timestamp, "EUR/RUB", eurValue);
             }
         } catch (Exception e) {
             System.err.println("  [ЦБ РФ] Ошибка при парсинге: " + e.getMessage());
