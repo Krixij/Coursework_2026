@@ -10,15 +10,13 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 public class ExcelExporter {
-
     private static final String DECIMAL_FORMAT = "0.0000";
 
     public static void exportAllToExcel() {
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy_HH-mm"));
         String fullPath = "excel_exports" + File.separator + "currency_rates_" + timestamp + ".xlsx";
 
         ensureExcelDirectory();
-
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
 
             CellStyle decimalStyle = workbook.createCellStyle();
@@ -40,7 +38,6 @@ public class ExcelExporter {
             System.err.println("Ошибка создания Excel: " + e.getMessage());
         }
     }
-
     private static void createCurrencySheet(XSSFWorkbook workbook, String sheetName,
                                             String investingFile, String cbrFile,
                                             CellStyle decimalStyle) {
@@ -63,7 +60,7 @@ public class ExcelExporter {
 
         Row dateRow = sheet.createRow(1);
         dateRow.createCell(0).setCellValue("Создано: " +
-                LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")));
+                LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
 
         Row headerRow = sheet.createRow(3);
         CellStyle headerStyle = workbook.createCellStyle();
@@ -82,7 +79,6 @@ public class ExcelExporter {
 
         Map<String, Double> investingData = readCSV(investingFile);
         Map<String, Double> cbrData = readCSV(cbrFile);
-
         Set<String> allTimes = new TreeSet<>();
         allTimes.addAll(investingData.keySet());
         allTimes.addAll(cbrData.keySet());
@@ -108,8 +104,19 @@ public class ExcelExporter {
 
             if (!hasFirstInvesting || !hasFirstCbr) continue;
 
-            double inv = (investingVal != null) ? investingVal : lastInvesting;
-            double cbr = (cbrVal != null) ? cbrVal : lastCbr;
+            double inv;
+            if (investingVal != null) {
+                inv = investingVal;
+            } else {
+                inv = lastInvesting;
+            }
+
+            double cbr;
+            if (cbrVal != null) {
+                cbr = cbrVal;
+            } else {
+                cbr = lastCbr;
+            }
 
             Row row = sheet.createRow(rowNum);
             row.createCell(0).setCellValue(time);
@@ -133,14 +140,12 @@ public class ExcelExporter {
         int lastDataRow = rowNum - 1;
 
         XSSFDrawing drawing = (XSSFDrawing) sheet.createDrawingPatriarch();
-
         createComparisonChart(drawing, sheet,
                 5, 3,
                 25, 32,
-                sheetName + " — Сравниетльный график",
+                sheetName + " — Сравнительный график",
                 0, 1, 2, lastDataRow);
     }
-
     private static Map<String, Double> readCSV(String fileName) {
         Map<String, Double> data = new TreeMap<>();
         File file = new File(fileName);
@@ -156,6 +161,9 @@ public class ExcelExporter {
 
                 if (parts.length >= 3) {
                     String dateTime = parts[0].trim();
+                    if (dateTime.length() > 16) {
+                        dateTime = dateTime.substring(0, 16);
+                    }
                     String priceStr = parts[2].trim();
 
                     if (parts.length > 3) {
@@ -180,7 +188,6 @@ public class ExcelExporter {
         }
         return data;
     }
-
     private static void createComparisonChart(XSSFDrawing drawing, Sheet sheet,
                                               int col1, int row1, int col2, int row2,
                                               String title, int catCol, int valCol1,
@@ -220,7 +227,6 @@ public class ExcelExporter {
 
         chart.plot(data);
     }
-
     public static void ensureExcelDirectory() {
         File dir = new File("excel_exports");
         if (!dir.exists()) {

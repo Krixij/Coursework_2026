@@ -18,46 +18,94 @@ import com.opencsv.CSVWriter;
 
 public class Parser {
     private static final int intervalMinutes = 1;
-
-    private static volatile boolean running = true;
+    private static String lastUsdInvesting = null;
+    private static String lastEurInvesting = null;
+    private static String lastUsdCbr = null;
+    private static String lastEurCbr = null;
+    private static boolean firstSend = true;
+    private static Float difUsdInvesting = null;
+    private static Float difEurInvesting = null;
 
     public static void main(String[] args) {
         ExcelExporter.ensureExcelDirectory();
 
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            scheduler.shutdown();
             ExcelExporter.exportAllToExcel();
+            sendFinalCurrencyMessage();
+            System.out.println("Парсер остановлен\n");
         }));
+
         System.out.println("Парсер запущен. Интервал: " + intervalMinutes + " минута");
 
         parseAllCurrency(client);
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
         scheduler.scheduleAtFixedRate(
                 () -> parseAllCurrency(client),
                 intervalMinutes,
                 intervalMinutes,
                 TimeUnit.MINUTES
         );
+
         try {
             Thread.currentThread().join();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
-
+    private static void sendFinalCurrencyMessage() {
+        String currencyMessage = EmailNotifier.formatCurrencyMessage(
+                lastUsdInvesting, lastEurInvesting, lastUsdCbr, lastEurCbr
+        );
+        String fullMessage = "До свидания, парсер остановлен.\nСводка текущих курсов на сегодня:\n\n " + currencyMessage
+                + "\n\nСформирован Excel отчет";
+        EmailNotifier.sendCurrencyUpdate(
+                "Сводка данных на " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM.yyyy")),
+                fullMessage
+        );
+    }
     private static void parseAllCurrency(HttpClient client) {
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm"));
         System.out.println("[" + timestamp + "] обновление данных:");
-        CompletableFuture<Void> investingFuture = CompletableFuture.runAsync(() ->
-                InvestingCodeCurrency(client));
-        CompletableFuture<Void> cbrFuture = CompletableFuture.runAsync(() ->
-                parseCbrCurrency(client));
-        CompletableFuture.allOf(investingFuture, cbrFuture).join();
 
+        try {
+            InvestingCodeCurrency(client);
+        } catch (Exception e) {
+            System.err.println("  [Investing.com] Критическая ошибка: " + e.getMessage());
+        }
+
+        try {
+            parseCbrCurrency(client);
+        } catch (Exception e) {
+            System.err.println("  [ЦБ РФ] Критическая ошибка: " + e.getMessage());
+        }
+
+        if (firstSend) {
+            String currencyMessage = EmailNotifier.formatCurrencyMessage(
+                    lastUsdInvesting, lastEurInvesting, lastUsdCbr, lastEurCbr
+            );
+            String fullMessage = "Здравствуйте, парсер запущен.\nСводка курсов на сегодня:\n\n " + currencyMessage;
+            EmailNotifier.sendCurrencyUpdate(
+                    "Сводка данных на " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM.yyyy")),
+                    fullMessage
+            );
+            firstSend = false;
+        } else {
+            if (difEurInvesting != null || difUsdInvesting != null) {
+                String currencyMessage = EmailNotifier.formatDifferenceMessage(
+                        difUsdInvesting, difEurInvesting);
+                String fullMessage = "Изменение курса валюты:\n\n " + currencyMessage;
+                EmailNotifier.sendCurrencyUpdate(
+                        "Сводка изменения данных на " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM.yyyy")),
+                        fullMessage
+                );
+                difUsdInvesting = null;
+                difEurInvesting = null;
+            }
+        }
     }
     private static void InvestingCodeCurrency(HttpClient client) {
         String[][] currencies = {
@@ -87,12 +135,43 @@ public class Parser {
             if (titleElement == null) {
                 titleElement = doc.select("h1").first();
             }
-            String fullTitle = titleElement != null ? titleElement.text() : name;
+            String fullTitle = name;
+            if (titleElement != null) {
+                fullTitle = titleElement.text();
+            }
             String currencyTitle = fullTitle.split("-")[0].trim();
             Element priceElement = doc.select("[data-test='instrument-price-last']").first();
-            String currentPrice = priceElement != null ? priceElement.text() : "N/A";
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            String currentPrice = "N/A";
+            if (priceElement != null) {
+                currentPrice = priceElement.text();
+            }
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm"));
             System.out.println("  [Investing.com] " + name + ": " + currentPrice);
+
+            if (name.equals("USD/RUB")) {
+                if (lastUsdInvesting == null){
+                    lastUsdInvesting = currentPrice;
+                } else {
+                    if (!lastUsdInvesting.equals(currentPrice)){
+                        float price = Float.parseFloat(currentPrice.replace(',', '.'));
+                        float lastPrice = Float.parseFloat(lastUsdInvesting.replace(',', '.'));
+                        difUsdInvesting = (price / lastPrice - 1) * 100;
+                        lastUsdInvesting = currentPrice;
+                    }
+                }
+            } else if (name.equals("EUR/RUB")) {
+                if (lastEurInvesting == null){
+                    lastEurInvesting = currentPrice;
+                } else {
+                    if (!lastEurInvesting.equals(currentPrice)){
+                        float price = Float.parseFloat(currentPrice.replace(',', '.'));
+                        float lastPrice = Float.parseFloat(lastEurInvesting.replace(',', '.'));
+                        difEurInvesting = (price / lastPrice - 1) * 100;
+                        lastEurInvesting = currentPrice;
+                    }
+                }
+            }
+
             try (CSVWriter csvWriter = new CSVWriter(new FileWriter(filename, true))) {
                 if (new java.io.File(filename).length() == 0) {
                     csvWriter.writeNext(new String[]{"Timestamp", "Name currency", "Price currency"});
@@ -119,17 +198,19 @@ public class Parser {
             }
             String xmlContent = response.body();
             Document doc = Jsoup.parse(xmlContent, "", org.jsoup.parser.Parser.xmlParser());
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm"));
             Element usdElement = doc.select("Valute:has(CharCode:contains(USD))").first();
             if (usdElement != null) {
                 String usdValue = usdElement.select("Value").text();
                 System.out.println("  [ЦБ РФ] USD/RUB: " + usdValue);
+                lastUsdCbr = usdValue;
                 saveCbrData("usd_rub_cbr.csv", timestamp, "USD/RUB", usdValue);
             }
             Element eurElement = doc.select("Valute:has(CharCode:contains(EUR))").first();
             if (eurElement != null) {
                 String eurValue = eurElement.select("Value").text();
                 System.out.println("  [ЦБ РФ] EUR/RUB: " + eurValue);
+                lastEurCbr = eurValue;
                 saveCbrData("eur_rub_cbr.csv", timestamp, "EUR/RUB", eurValue);
             }
         } catch (Exception e) {
